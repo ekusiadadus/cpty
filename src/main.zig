@@ -1,46 +1,45 @@
-//! By convention, main.zig is where your main function lives in the case that
-//! you are building an executable. If you are making a library, the convention
-//! is to delete this file and start with root.zig instead.
+const std = @import("std");
+const os = std.os;
+const posix = std.posix;
+const io = std.io;
+const mem = std.mem;
+const fs = std.fs;
+
+fn readFromFd(fd: std.posix.fd_t) ?[]u8 {
+    _ = fd;
+    @panic("readFromFd not implemented");
+}
+
+fn spawnPtyWithShell(default_shell: []const u8) !std.posix.fd_t {
+    _ = default_shell;
+    @panic("spawnPtyWithShell not implemented");
+}
+
 
 pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
-
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
-
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
-
-    try bw.flush(); // Don't forget to flush!
-}
-
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
-
-test "use other module" {
-    try std.testing.expectEqual(@as(i32, 150), lib.add(100, 50));
-}
-
-test "fuzz example" {
-    const Context = struct {
-        fn testOne(context: @This(), input: []const u8) anyerror!void {
-            _ = context;
-            // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-            try std.testing.expect(!std.mem.eql(u8, "canyoufindme", input));
-        }
+    const default_shell = std.process.getEnvVarOwned(std.heap.page_allocator, "SHELL") catch |err| {
+        std.debug.print("Failed to get SHELL env var: {}\n", .{err});
+        return err;
     };
-    try std.testing.fuzz(Context{}, Context.testOne, .{});
+    defer std.heap.page_allocator.free(default_shell);
+
+    const stdout_fd = spawnPtyWithShell(default_shell) catch |err| {
+        std.debug.print("Failed to spawn pty: {}\n", .{err});
+        return err;
+    };
+
+    var read_buffer = std.ArrayList(u8).init(std.heap.page_allocator);
+    defer read_buffer.deinit();
+
+    while (true) {
+        if (readFromFd(stdout_fd)) |read_bytes| {
+            try read_buffer.appendSlice(read_bytes);
+            std.heap.page_allocator.free(read_bytes);
+        } else {
+            std.debug.print("Output: {s}\n", .{read_buffer.items});
+            break;
+        }
+    }
 }
 
-const std = @import("std");
 
-/// This imports the separate module containing `root.zig`. Take a look in `build.zig` for details.
-const lib = @import("cpty_lib");
