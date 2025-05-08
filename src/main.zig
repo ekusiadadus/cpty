@@ -1,86 +1,58 @@
 const std = @import("std");
-const os = std.os;
 const posix = std.posix;
 const io = std.io;
-const mem = std.mem;
-const fs = std.fs;
+const time = std.time;
+const terminal = @import("terminal.zig");
+const ui = @import("ui.zig");
 
-// Cライブラリのインポート
+// シグナル処理用のCライブラリインポート
 const c = @cImport({
-    @cInclude("stdlib.h");
-    @cInclude("fcntl.h");
-    @cInclude("unistd.h");
-    @cInclude("util.h"); // macOSの場合はutil.h、Linuxの場合はpty.h
+    @cInclude("signal.h");
 });
 
-// ファイルディスクリプタから読み込む関数
-fn readFromFd(fd: std.posix.fd_t) ?[]u8 {
-    var buffer = std.heap.page_allocator.alloc(u8, 4096) catch return null;
-    errdefer std.heap.page_allocator.free(buffer);
+// UI操作用のグローバルアロケータ
+var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 
-    const bytes_read = posix.read(fd, buffer) catch return null;
-    if (bytes_read == 0) {
-        // ファイルの終わりに達した場合
-        std.heap.page_allocator.free(buffer);
-        return null;
+fn signalHandler(sig: c_int) callconv(.C) void {
+    const allocator = gpa.allocator();
+    
+    if (sig == c.SIGWINCH) {
+        // ウィンドウサイズ変更シグナルの場合、UIを再描画
+        ui.drawUi(allocator) catch {};
+    } else if (sig == c.SIGTERM or sig == c.SIGINT or sig == c.SIGQUIT or sig == c.SIGHUP) {
+        // 終了シグナルの場合、ターミナル状態を復元して終了
+        const stdout = std.io.getStdOut().writer();
+        stdout.writeAll("\x1b[H\x1b[J") catch {}; // 画面クリア
+        stdout.writeAll("\x1b[?25h") catch {}; // カーソル表示
+        std.process.exit(0);
     }
-
-    // 読み込んだバイト数だけ返す
-    return buffer[0..bytes_read];
-}
-
-// PTYをフォークしてシェルを実行する関数
-fn spawnPtyWithShell(default_shell: []const u8) !std.posix.fd_t {
-    var master_fd: c_int = undefined;
-
-    // forkptyを使用してPTYを作成し、同時にプロセスをフォーク
-    const pid = c.forkpty(&master_fd, null, null, null);
-
-    if (pid < 0) {
-        // エラー
-        return error.ForkFailed;
-    } else if (pid == 0) {
-        // 子プロセス
-        // シェルコマンドを実行
-
-        var process = std.process.Child.init(&[_][]const u8{default_shell}, std.heap.page_allocator);
-        process.stdin_behavior = .Inherit;
-        process.stdout_behavior = .Inherit;
-        process.stderr_behavior = .Inherit;
-
-        _ = process.spawn() catch {
-            std.debug.print("Failed to spawn shell process\n", .{});
-            posix.exit(1);
-        };
-
-        std.time.sleep(std.time.ns_per_s * 2); // 5秒待機
-        posix.exit(0); // 子プロセスを終了
-    }
-
-    // 親プロセス - マスターファイルディスクリプタを返す
-    return master_fd;
 }
 
 pub fn main() !void {
-    const default_shell = std.process.getEnvVarOwned(std.heap.page_allocator, "SHELL") catch |err| {
-        std.debug.print("Failed to get SHELL env var: {}\n", .{err});
-        return err;
-    };
-    defer std.heap.page_allocator.free(default_shell);
+    const allocator = gpa.allocator();
 
-    const stdout_fd = try spawnPtyWithShell(default_shell);
-    defer posix.close(stdout_fd);
+    defer {
+        // Zig 0.14.0では、gpa.deinit()はheap.Checkを返す
+        const leaked = gpa.deinit();
+        if (leaked == .leak) std.debug.print("Memory leak detected.\n", .{});
+    }
 
-    var read_buffer = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer read_buffer.deinit();
-
+    // シグナルハンドラのセットアップ
+    var sa = std.mem.zeroes(posix.Sigaction);
+    sa.handler.handler = signalHandler;
+    
+    // Zig 0.14.0ではsigactionはvoidを返すので、単純に呼び出す
+    posix.sigaction(posix.SIG.WINCH, &sa, null);
+    posix.sigaction(posix.SIG.TERM, &sa, null);
+    posix.sigaction(posix.SIG.INT, &sa, null);
+    posix.sigaction(posix.SIG.QUIT, &sa, null);
+    posix.sigaction(posix.SIG.HUP, &sa, null);
+    
+    // 初期UI描画
+    try ui.drawUi(allocator);
+    
+    // シグナルを無期限に待つ
     while (true) {
-        if (readFromFd(stdout_fd)) |read_bytes| {
-            try read_buffer.appendSlice(read_bytes);
-            std.heap.page_allocator.free(read_bytes);
-        } else {
-            std.debug.print("Output: {s}\n", .{read_buffer.items});
-            break;
-        }
+        time.sleep(time.ns_per_s);
     }
 }
