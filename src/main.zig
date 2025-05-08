@@ -24,7 +24,7 @@ fn readFromFd(fd: std.posix.fd_t) ?[]u8 {
         std.heap.page_allocator.free(buffer);
         return null;
     }
-    
+
     // 読み込んだバイト数だけ返す
     return buffer[0..bytes_read];
 }
@@ -32,10 +32,10 @@ fn readFromFd(fd: std.posix.fd_t) ?[]u8 {
 // PTYをフォークしてシェルを実行する関数
 fn spawnPtyWithShell(default_shell: []const u8) !std.posix.fd_t {
     var master_fd: c_int = undefined;
-    
+
     // forkptyを使用してPTYを作成し、同時にプロセスをフォーク
     const pid = c.forkpty(&master_fd, null, null, null);
-    
+
     if (pid < 0) {
         // エラー
         return error.ForkFailed;
@@ -52,11 +52,11 @@ fn spawnPtyWithShell(default_shell: []const u8) !std.posix.fd_t {
             std.debug.print("Failed to spawn shell process\n", .{});
             posix.exit(1);
         };
-       
+
         std.time.sleep(std.time.ns_per_s * 2); // 5秒待機
         posix.exit(0); // 子プロセスを終了
     }
-    
+
     // 親プロセス - マスターファイルディスクリプタを返す
     return master_fd;
 }
@@ -67,13 +67,13 @@ pub fn main() !void {
         return err;
     };
     defer std.heap.page_allocator.free(default_shell);
-    
+
     const stdout_fd = try spawnPtyWithShell(default_shell);
     defer posix.close(stdout_fd);
-    
+
     var read_buffer = std.ArrayList(u8).init(std.heap.page_allocator);
     defer read_buffer.deinit();
-    
+
     while (true) {
         if (readFromFd(stdout_fd)) |read_bytes| {
             try read_buffer.appendSlice(read_bytes);
